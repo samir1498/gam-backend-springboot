@@ -1,8 +1,6 @@
 package com.greenalgeria.zone.api;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -10,59 +8,27 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import com.greenalgeria.zone.application.ZoneResponse;
-import com.greenalgeria.zone.application.ZoneService;
-import com.greenalgeria.zone.domain.ZoneStatus;
-import com.greenalgeria.zone.domain.ZoneType;
-import java.util.List;
+import com.greenalgeria.shared.IntegrationTest;
+import com.jayway.jsonpath.JsonPath;
 import java.util.UUID;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.web.server.ResponseStatusException;
+import org.springframework.transaction.annotation.Transactional;
 
-@Tag("unit")
-@WebMvcTest(ZoneController.class)
-class ZoneControllerTest {
-
-    @Autowired
-    MockMvc mockMvc;
-
-    @MockitoBean
-    ZoneService zoneService;
+@Transactional
+class ZoneControllerTest extends IntegrationTest {
 
     @Test
     void create_returns201() throws Exception {
-        var zoneId = UUID.randomUUID();
-        var response = new ZoneResponse(
-                zoneId,
-                "New Zone",
-                ZoneType.planting,
-                ZoneStatus.planned,
-                36.5,
-                3.0,
-                null,
-                null,
-                "desc",
-                List.of(),
-                "contact",
-                null,
-                0);
-        when(zoneService.create(any())).thenReturn(response);
-
         mockMvc.perform(post("/api/zones")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"name":"New Zone","type":"planting","lat":36.5,"lng":3.0,"description":"desc","organizerContact":"contact"}
                                 """))
                 .andExpect(status().isCreated())
-                .andExpect(header().string("Location", "/api/zones/" + zoneId))
-                .andExpect(jsonPath("$.id").value(zoneId.toString()));
+                .andExpect(header().exists("Location"))
+                .andExpect(jsonPath("$.id").isNotEmpty())
+                .andExpect(jsonPath("$.name").value("New Zone"));
     }
 
     @Test
@@ -77,24 +43,21 @@ class ZoneControllerTest {
 
     @Test
     void update_returns200() throws Exception {
-        var zoneId = UUID.randomUUID();
-        var response = new ZoneResponse(
-                zoneId,
-                "Updated",
-                ZoneType.planting,
-                ZoneStatus.in_progress,
-                36.5,
-                3.0,
-                10,
-                5,
-                null,
-                List.of(),
-                null,
-                null,
-                0);
-        when(zoneService.update(any(), any())).thenReturn(response);
+        var body = mockMvc.perform(post("/api/zones")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Old","type":"planting","lat":36.5,"lng":3.0,"description":"Before"}
+                                """))
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        var id = JsonPath.read(body, "$.id");
 
-        mockMvc.perform(patch("/api/zones/{id}", zoneId)
+        var userId = signUpAndGetUserId();
+
+        mockMvc.perform(patch("/api/zones/{id}", id)
+                        .with(user(userId))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"name":"Updated","status":"in_progress","targetCount":10,"currentCount":5}
@@ -105,10 +68,12 @@ class ZoneControllerTest {
 
     @Test
     void update_returns404() throws Exception {
-        var zoneId = UUID.randomUUID();
-        when(zoneService.update(any(), any())).thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND));
+        var id = UUID.randomUUID();
 
-        mockMvc.perform(patch("/api/zones/{id}", zoneId)
+        var userId = signUpAndGetUserId();
+
+        mockMvc.perform(patch("/api/zones/{id}", id)
+                        .with(user(userId))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"name":"Nope"}
@@ -118,31 +83,51 @@ class ZoneControllerTest {
 
     @Test
     void delete_returns204() throws Exception {
-        mockMvc.perform(delete("/api/zones/{id}", UUID.randomUUID())).andExpect(status().isNoContent());
+        var body = mockMvc.perform(post("/api/zones")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"To Delete","type":"planting","lat":36.5,"lng":3.0,"description":"Deleting"}
+                                """))
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        var id = JsonPath.read(body, "$.id");
+
+        var userId = signUpAndGetUserId();
+
+        mockMvc.perform(delete("/api/zones/{id}", id).with(user(userId))).andExpect(status().isNoContent());
     }
 
     @Test
     void delete_returns404() throws Exception {
-        var zoneId = UUID.randomUUID();
-        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND))
-                .when(zoneService)
-                .delete(zoneId);
+        var id = UUID.randomUUID();
 
-        mockMvc.perform(delete("/api/zones/{id}", zoneId)).andExpect(status().isNotFound());
+        var userId = signUpAndGetUserId();
+
+        mockMvc.perform(delete("/api/zones/{id}", id).with(user(userId))).andExpect(status().isNotFound());
     }
 
     @Test
     void registerVolunteer_returns204() throws Exception {
-        mockMvc.perform(post("/api/zones/{id}/volunteer", UUID.randomUUID())).andExpect(status().isNoContent());
+        var body = mockMvc.perform(post("/api/zones")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Volunteer","type":"planting","lat":36.5,"lng":3.0,"description":"Volunteering"}
+                                """))
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        var id = JsonPath.read(body, "$.id");
+
+        mockMvc.perform(post("/api/zones/{id}/volunteer", id)).andExpect(status().isNoContent());
     }
 
     @Test
     void registerVolunteer_returns404() throws Exception {
-        var zoneId = UUID.randomUUID();
-        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND))
-                .when(zoneService)
-                .registerVolunteer(zoneId);
+        var id = UUID.randomUUID();
 
-        mockMvc.perform(post("/api/zones/{id}/volunteer", zoneId)).andExpect(status().isNotFound());
+        mockMvc.perform(post("/api/zones/{id}/volunteer", id)).andExpect(status().isNotFound());
     }
 }
